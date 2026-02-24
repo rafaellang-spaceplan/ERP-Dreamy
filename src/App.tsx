@@ -48,7 +48,7 @@ import {
   Pie
 } from 'recharts';
 import { cn, type Client, type Opportunity, type Project, type Transaction } from './types';
-import { auth, db, googleProvider } from './lib/firebase';
+import { auth, db, googleProvider, isFirebaseConfigured } from './lib/firebase';
 import { signInWithPopup, signOut, onAuthStateChanged, type User } from 'firebase/auth';
 import { ref, onValue, push, set, remove, update } from 'firebase/database';
 
@@ -751,6 +751,40 @@ export default function App() {
       </div>
     </div>
   );
+
+  if (!isFirebaseConfigured) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+        <Card className="w-full max-w-lg p-8 flex flex-col items-center gap-6 text-center text-foreground border-amber-500/50 bg-amber-500/5">
+          <div className="w-16 h-16 bg-amber-500/10 rounded-2xl flex items-center justify-center text-amber-600">
+            <AlertCircle size={32} />
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">Configuração Necessária</h1>
+            <p className="text-muted-foreground mt-2">
+              As chaves do Firebase não foram encontradas. Para continuar, você precisa configurar os <strong>Secrets</strong> no painel do AI Studio.
+            </p>
+          </div>
+          
+          <div className="w-full text-left bg-card border border-border rounded-lg p-4 font-mono text-xs space-y-2">
+            <p className="font-bold text-amber-600 mb-2">// Variáveis necessárias:</p>
+            <p>VITE_FIREBASE_API_KEY</p>
+            <p>VITE_FIREBASE_AUTH_DOMAIN</p>
+            <p>VITE_FIREBASE_PROJECT_ID</p>
+            <p>VITE_FIREBASE_STORAGE_BUCKET</p>
+            <p>VITE_FIREBASE_MESSAGING_SENDER_ID</p>
+            <p>VITE_FIREBASE_APP_ID</p>
+            <p>VITE_FIREBASE_DATABASE_URL</p>
+            <p>VITE_ALLOWED_EMAILS</p>
+          </div>
+
+          <p className="text-sm text-muted-foreground">
+            Após adicionar as chaves, a página irá recarregar automaticamente.
+          </p>
+        </Card>
+      </div>
+    );
+  }
 
   if (isAuthLoading) {
     return (
