@@ -18,7 +18,9 @@ import {
   Clock,
   AlertCircle,
   TrendingUp,
-  TrendingDown
+  TrendingDown,
+  LogOut,
+  Lock
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -46,6 +48,9 @@ import {
   Pie
 } from 'recharts';
 import { cn, type Client, type Opportunity, type Project, type Transaction } from './types';
+import { auth, db, googleProvider } from './lib/firebase';
+import { signInWithPopup, signOut, onAuthStateChanged, type User } from 'firebase/auth';
+import { ref, onValue, push, set, remove, update } from 'firebase/database';
 
 // --- Components ---
 
@@ -144,6 +149,9 @@ const Modal = ({ isOpen, onClose, title, children }: { isOpen: boolean, onClose:
 // --- Main App ---
 
 export default function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [isAllowed, setIsAllowed] = useState(false);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'crm' | 'finance' | 'projects' | 'clients'>('dashboard');
   const [darkMode, setDarkMode] = useState(false);
   const [clients, setClients] = useState<Client[]>([]);
@@ -152,7 +160,7 @@ export default function App() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalType, setModalType] = useState<'client' | 'opportunity' | 'project' | 'transaction' | null>(null);
-  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<string | number | null>(null);
 
   // Form states
   const [clientForm, setClientForm] = useState({ name: '', email: '', phone: '', company: '' });
@@ -163,8 +171,58 @@ export default function App() {
   const [isFabOpen, setIsFabOpen] = useState(false);
 
   useEffect(() => {
-    fetchData();
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      if (u) {
+        const allowedEmails = import.meta.env.VITE_ALLOWED_EMAILS?.split(',') || [];
+        setIsAllowed(allowedEmails.includes(u.email || ''));
+      } else {
+        setIsAllowed(false);
+      }
+      setIsAuthLoading(false);
+    });
+    return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (user && isAllowed) {
+      const clientsRef = ref(db, 'clients');
+      const oppsRef = ref(db, 'opportunities');
+      const projectsRef = ref(db, 'projects');
+      const transRef = ref(db, 'transactions');
+
+      const unsubClients = onValue(clientsRef, (snapshot) => {
+        const data = snapshot.val();
+        const list = data ? Object.entries(data).map(([id, val]: [string, any]) => ({ id, ...val })) : [];
+        setClients(list.sort((a, b) => a.name.localeCompare(b.name)));
+      });
+
+      const unsubOpps = onValue(oppsRef, (snapshot) => {
+        const data = snapshot.val();
+        const list = data ? Object.entries(data).map(([id, val]: [string, any]) => ({ id, ...val })) : [];
+        setOpportunities(list);
+      });
+
+      const unsubProjects = onValue(projectsRef, (snapshot) => {
+        const data = snapshot.val();
+        const list = data ? Object.entries(data).map(([id, val]: [string, any]) => ({ id, ...val })) : [];
+        setProjects(list);
+      });
+
+      const unsubTrans = onValue(transRef, (snapshot) => {
+        const data = snapshot.val();
+        const list = data ? Object.entries(data).map(([id, val]: [string, any]) => ({ id, ...val })) : [];
+        setTransactions(list.sort((a, b) => b.date.localeCompare(a.date)));
+      });
+
+      return () => {
+        unsubClients();
+        unsubOpps();
+        unsubProjects();
+        unsubTrans();
+      };
+    }
+  }, [user, isAllowed]);
 
   useEffect(() => {
     if (darkMode) {
@@ -174,18 +232,8 @@ export default function App() {
     }
   }, [darkMode]);
 
-  const fetchData = async () => {
-    const [cRes, oRes, pRes, tRes] = await Promise.all([
-      fetch('/api/clients'),
-      fetch('/api/opportunities'),
-      fetch('/api/projects'),
-      fetch('/api/transactions')
-    ]);
-    setClients(await cRes.json());
-    setOpportunities(await oRes.json());
-    setProjects(await pRes.json());
-    setTransactions(await tRes.json());
-  };
+  const handleLogin = () => signInWithPopup(auth, googleProvider);
+  const handleLogout = () => signOut(auth);
 
   const handleEdit = (type: 'client' | 'opportunity' | 'project' | 'transaction', data: any) => {
     setModalType(type);
@@ -203,40 +251,39 @@ export default function App() {
   };
 
   const handleAdd = async () => {
-    let endpoint = '';
+    let path = '';
     let body = {};
 
     if (modalType === 'client') {
-      endpoint = editingId ? `/api/clients/${editingId}` : '/api/clients';
+      path = 'clients';
       body = clientForm;
     } else if (modalType === 'opportunity') {
-      endpoint = editingId ? `/api/opportunities/${editingId}` : '/api/opportunities';
-      body = { ...oppForm, client_id: parseInt(oppForm.client_id), value: parseFloat(oppForm.value) };
+      path = 'opportunities';
+      const client = clients.find(c => c.id.toString() === oppForm.client_id);
+      body = { ...oppForm, client_id: oppForm.client_id, client_name: client?.name || '', value: parseFloat(oppForm.value) };
     } else if (modalType === 'project') {
-      endpoint = editingId ? `/api/projects/${editingId}` : '/api/projects';
-      body = { ...projectForm, client_id: parseInt(projectForm.client_id), budget: parseFloat(projectForm.budget) };
+      path = 'projects';
+      const client = clients.find(c => c.id.toString() === projectForm.client_id);
+      body = { ...projectForm, client_id: projectForm.client_id, client_name: client?.name || '', budget: parseFloat(projectForm.budget) };
     } else if (modalType === 'transaction') {
-      endpoint = editingId ? `/api/transactions/${editingId}` : '/api/transactions';
+      path = 'transactions';
       body = { ...transForm, amount: parseFloat(transForm.amount) };
     }
 
-    const res = await fetch(endpoint, {
-      method: editingId ? 'PUT' : 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-
-    if (res.ok) {
-      fetchData();
-      setIsModalOpen(false);
-      resetForms();
+    if (editingId) {
+      await set(ref(db, `${path}/${editingId}`), { ...body, id: editingId });
+    } else {
+      const newRef = push(ref(db, path));
+      await set(newRef, { ...body, id: newRef.key });
     }
+
+    setIsModalOpen(false);
+    resetForms();
   };
 
-  const handleDelete = async (type: string, id: number) => {
+  const handleDelete = async (type: string, id: string | number) => {
     if (!confirm('Tem certeza que deseja excluir?')) return;
-    const res = await fetch(`/api/${type}/${id}`, { method: 'DELETE' });
-    if (res.ok) fetchData();
+    await remove(ref(db, `${type}/${id}`));
   };
 
   const resetForms = () => {
@@ -247,16 +294,8 @@ export default function App() {
     setTransForm({ type: 'income', category: '', amount: '', date: format(new Date(), 'yyyy-MM-dd'), description: '', is_recurring: false });
   };
 
-  const moveOpportunity = async (id: number, newStatus: Opportunity['status']) => {
-    const opp = opportunities.find(o => o.id === id);
-    if (!opp) return;
-
-    await fetch(`/api/opportunities/${id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...opp, status: newStatus })
-    });
-    fetchData();
+  const moveOpportunity = async (id: string | number, newStatus: Opportunity['status']) => {
+    await update(ref(db, `opportunities/${id}`), { status: newStatus });
   };
 
   // --- Views ---
@@ -713,6 +752,60 @@ export default function App() {
     </div>
   );
 
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <motion.div 
+          animate={{ rotate: 360 }} 
+          transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
+          className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full"
+        />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+        <Card className="w-full max-w-md p-8 flex flex-col items-center gap-6 text-center text-foreground">
+          <div className="w-16 h-16 bg-primary rounded-2xl flex items-center justify-center text-primary-foreground shadow-xl shadow-primary/20">
+            <LayoutDashboard size={32} />
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">SoftERP</h1>
+            <p className="text-muted-foreground mt-1">Acesse o ERP da sua Software House</p>
+          </div>
+          <Button onClick={handleLogin} className="w-full py-6 text-lg gap-3">
+            <img src="https://www.google.com/favicon.ico" className="w-5 h-5" alt="Google" />
+            Entrar com Google
+          </Button>
+          <p className="text-xs text-muted-foreground">
+            Acesso restrito aos administradores autorizados.
+          </p>
+        </Card>
+      </div>
+    );
+  }
+
+  if (!isAllowed) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+        <Card className="w-full max-w-md p-8 flex flex-col items-center gap-6 text-center text-foreground">
+          <div className="w-16 h-16 bg-rose-500/10 rounded-2xl flex items-center justify-center text-rose-600">
+            <Lock size={32} />
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">Acesso Negado</h1>
+            <p className="text-muted-foreground mt-1">Seu email ({user.email}) não está na lista de acesso.</p>
+          </div>
+          <Button variant="secondary" onClick={handleLogout} className="w-full">
+            Sair e tentar outra conta
+          </Button>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-background text-foreground font-sans">
       {/* Desktop Sidebar */}
@@ -753,7 +846,17 @@ export default function App() {
           ))}
         </nav>
 
-        <div className="mt-auto">
+        <div className="mt-auto flex flex-col gap-4">
+          <div className="flex items-center gap-3 px-4 py-3 bg-muted/50 rounded-xl">
+            <img src={user?.photoURL || ''} className="w-8 h-8 rounded-full border border-border" alt="Avatar" />
+            <div className="flex flex-col overflow-hidden">
+              <span className="text-xs font-bold truncate">{user?.displayName}</span>
+              <span className="text-[10px] text-muted-foreground truncate">{user?.email}</span>
+            </div>
+            <button onClick={handleLogout} className="ml-auto text-muted-foreground hover:text-rose-500 transition-colors">
+              <LogOut size={16} />
+            </button>
+          </div>
           <Card className="p-4 bg-primary/5 border-primary/10">
             <p className="text-xs font-bold uppercase text-primary mb-1">Suporte Premium</p>
             <p className="text-xs text-muted-foreground mb-3">Precisa de ajuda com seu ERP?</p>
